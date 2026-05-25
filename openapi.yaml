@@ -4,7 +4,7 @@ info:
   description: Sixvault is a secure, role-based academic transcript management system that integrates multi-cryptographic techniques—including AES encryption, RSA digital signatures, and Shamir's Secret Sharing—to protect the confidentiality, integrity, and authenticity of student data in a controlled, collaborative environment.
   version: 1.0.0
 servers:
-  - url: https://api.sixvault.xyz
+  - url: https://sixvault-api.faizath.com
     description: Production Server
   - url: http://localhost:3000
     description: Local Development Server
@@ -1442,7 +1442,7 @@ paths:
                     properties:
                       url:
                         type: string
-                        example: "https://cdn.sixvault.xyz/transcript/10222069.pdf"
+                        example: "https://sixvault-cdn.faizath.com/transcript/10222069.pdf"
                         description: Public URL of the uploaded PDF
                       nim:
                         type: string
@@ -1507,7 +1507,7 @@ paths:
                     properties:
                       url:
                         type: string
-                        example: "https://cdn.sixvault.xyz/transcript/10222069.pdf"
+                        example: "https://sixvault-cdn.faizath.com/transcript/10222069.pdf"
                         description: Public URL of the decrypted PDF
                       nim:
                         type: string
