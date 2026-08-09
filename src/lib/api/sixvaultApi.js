@@ -214,11 +214,17 @@ export const nilaiApi = {
     });
   },
 
-  // List all pending key requests
+  // List key requests visible to the caller.
+  // The endpoint returns the standard {status, message, data} envelope; callers
+  // here expect a bare array, so unwrap it. The older bare-array response is
+  // still accepted so a client can talk to an un-upgraded server.
   listPendingRequests: async () => {
-    return createFetchRequest('/nilai/request/list', {
+    const response = await createFetchRequest('/nilai/request/list', {
       method: 'GET',
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.data?.requests ?? [];
   },
 
   // Approve a key request
