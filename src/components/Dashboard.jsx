@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { buildSignaturePayload } from '../lib/crypto/signaturePayload';
+import { deriveRecordKey } from '../lib/crypto/recordKey';
 import { mataKuliahApi, nilaiApi, studentApi, transcriptApi, kaprodiApi } from '../lib/api/sixvaultApi';
 import { decrypt as rsaDecrypt, sign as rsaSign, verify as rsaVerify } from '../lib/crypto/RSA';
 import AES from '../lib/crypto/AES';
@@ -46,6 +47,9 @@ const Dashboard = () => {
   });
   const [ipk, setIpk] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // The encryption key the specification requires to be asked for at encryption
+  // time. Each record's key is derived from it; it is never transmitted.
+  const [encryptionPassphrase, setEncryptionPassphrase] = useState('');
 
   // Course management state for Kaprodi
   const [existingCourses, setExistingCourses] = useState([]);
@@ -997,6 +1001,13 @@ const Dashboard = () => {
   };
 
   const handleSubmitAcademicData = async () => {
+    // The encryption key is mandatory: without it there is nothing to derive
+    // record keys from, and the server rejects entries that arrive without one.
+    if (!encryptionPassphrase.trim()) {
+      toast.error('An encryption key is required to encrypt these records');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       // Prepare data for submission
@@ -1007,13 +1018,18 @@ const Dashboard = () => {
       // They were computed here and then dropped, so the stored record was
       // incomplete, the signature could not cover them, and credits had to be
       // reconstructed at display time from the plaintext course catalogue.
+      //
+      // Each record carries its own AES key, derived from the passphrase the
+      // advisor supplies. The passphrase itself never leaves the browser; the
+      // derived keys must, because the server wraps and splits them.
       const nilaiData = validCourses.map(mk => ({
         nim: studentData.nim,
         kode: mk.kode,
         nama: mk.nama,
         nilai: mk.indeks,
         sks: String(mk.sks),
-        ipk: String(ipk)
+        ipk: String(ipk),
+        aes_key: deriveRecordKey(encryptionPassphrase, studentData.nim, mk.kode)
       }));
 
       // Goes through the API client rather than a bare fetch, so an expired
@@ -1042,6 +1058,7 @@ const Dashboard = () => {
               indeks: 'A'
             }))
           });
+          setEncryptionPassphrase('');
           // Clear autocomplete state
           setCourseSuggestions({});
           setShowSuggestions({});
@@ -2350,17 +2367,43 @@ const Dashboard = () => {
             </p>
           </div>
 
+          {/* Encryption key — asked for at the moment encryption is performed,
+              as the specification requires. Each record's AES key is derived
+              from it; the key itself is never sent to the server. */}
+          <div className="bg-amber-50 p-4 rounded-lg mb-6 border border-amber-200">
+            <label className="block text-sm font-medium text-gray-900 mb-2">
+              Encryption Key <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="password"
+              value={encryptionPassphrase}
+              onChange={(e) => setEncryptionPassphrase(e.target.value)}
+              autoComplete="off"
+              className="input-field"
+              placeholder="Enter the key used to encrypt these records"
+              disabled={isSubmitting}
+            />
+            <p className="text-xs text-gray-600 mt-2">
+              Each record is encrypted under its own key, derived from this one as
+              SHA3(key ‖ NIM ‖ course code). The key never leaves this device —
+              only the derived per-record keys are sent, which the server needs in
+              order to split and wrap them. Keep it: the same key always derives
+              the same record keys.
+            </p>
+          </div>
+
           {/* Submit Button */}
                     <div className="flex justify-end">
             <button
               onClick={handleSubmitAcademicData}
-              disabled={isSubmitting || !studentData.nim || !studentData.namaLengkap || isLoadingAvailableCourses}
+              disabled={isSubmitting || !studentData.nim || !studentData.namaLengkap || !encryptionPassphrase.trim() || isLoadingAvailableCourses}
               className="px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
             >
               {isSubmitting && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>}
               <span>
-                {isSubmitting ? 'Submitting...' : 
-                 isLoadingAvailableCourses ? 'Loading courses...' : 
+                {isSubmitting ? 'Submitting...' :
+                 isLoadingAvailableCourses ? 'Loading courses...' :
+                 !encryptionPassphrase.trim() ? 'Enter an encryption key' :
                  'Submit Academic Data'}
               </span>
             </button>
