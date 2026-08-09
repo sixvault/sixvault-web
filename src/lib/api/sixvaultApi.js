@@ -299,25 +299,53 @@ export const kaprodiApi = {
 
 // Transcript API
 export const transcriptApi = {
-  // Generate PDF from LaTeX and upload to Cloudflare R2
-  generateTranscript: async (nim, latex, encrypted = false, password = null) => {
-    const body = { nim, latex, encrypted };
+  // Generate a transcript PDF and upload it to Cloudflare R2.
+  // Sends the grade rows, not a LaTeX document: the template lives on the
+  // server so the client cannot supply arbitrary input to a TeX compiler.
+  generateTranscript: async (nim, records, encrypted = false, password = null, verified = undefined) => {
+    const body = { nim, records, encrypted };
     if (encrypted && password) {
       body.password = password;
     }
-    
+    if (verified !== undefined) {
+      body.verified = verified;
+    }
+
     return createFetchRequest('/transcript/generate', {
       method: 'POST',
       body: JSON.stringify(body),
     });
   },
 
-  // Decrypt encrypted PDF from Cloudflare R2
+  // Open an encrypted transcript.
+  // The endpoint streams the decrypted PDF back rather than republishing it to
+  // the public prefix, so this returns a Blob. A wrong password produces a JSON
+  // error (the server validates the %PDF- magic bytes) instead of a corrupt
+  // file reported as success.
   decryptTranscript: async (nim, password) => {
-    return createFetchRequest('/transcript/decrypt', {
+    const token = localStorage.getItem('access_token');
+
+    const response = await fetch(`${API_BASE_URL}/transcript/decrypt`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
       body: JSON.stringify({ nim, password }),
     });
+
+    if (!response.ok) {
+      let message = `HTTP error! status: ${response.status}`;
+      try {
+        const data = await response.json();
+        message = data.message || message;
+      } catch {
+        // Non-JSON error body; keep the status message.
+      }
+      throw new Error(message);
+    }
+
+    return response.blob();
   },
 };
 

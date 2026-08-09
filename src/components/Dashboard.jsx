@@ -15,7 +15,8 @@ import {
   Plus,
   Trash2,
   Upload,
-  AlertCircle
+  AlertCircle,
+  Unlock
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { mataKuliahApi, nilaiApi, studentApi, transcriptApi, kaprodiApi } from '../lib/api/sixvaultApi';
@@ -113,6 +114,10 @@ const Dashboard = () => {
   const [isGeneratingTranscript, setIsGeneratingTranscript] = useState(false);
   const [generatedTranscriptUrl, setGeneratedTranscriptUrl] = useState('');
   const [isLoadingTranscriptData, setIsLoadingTranscriptData] = useState(false);
+  // Opening an encrypted transcript: the stored object is RC4 ciphertext, so it
+  // has to be decrypted before a viewer can render it.
+  const [openEncryptedPassword, setOpenEncryptedPassword] = useState('');
+  const [isOpeningEncrypted, setIsOpeningEncrypted] = useState(false);
   
   // Kaprodi data state
   const [kaprodiList, setKaprodiList] = useState([]);
@@ -544,137 +549,6 @@ const Dashboard = () => {
     }
   };
 
-  // Generate LaTeX template for transcript
-  const generateLatexTemplate = (nim, studentName, gradesData, signature, kaprodiName) => {
-    const prodiName = userData?.prodi === 'teknik_informatika' 
-      ? 'Teknik Informatika' 
-      : 'Sistem dan Teknologi Informasi';
-
-    // Calculate GPA
-    const validGrades = gradesData.filter(grade => 
-      grade.nilai && grade.sks && gradePoints[grade.nilai]
-    );
-    
-    const totalPoints = validGrades.reduce((sum, grade) => {
-      return sum + (gradePoints[grade.nilai] * parseInt(grade.sks || 0));
-    }, 0);
-    
-    const totalSks = validGrades.reduce((sum, grade) => {
-      return sum + parseInt(grade.sks || 0);
-    }, 0);
-    
-    const gpa = totalSks > 0 ? (totalPoints / totalSks).toFixed(2) : '0.00';
-
-    // Sort grades by course code for consistent display
-    const sortedGrades = [...gradesData].sort((a, b) => a.kode.localeCompare(b.kode));
-
-    // Generate table rows
-    const tableRows = sortedGrades.map((grade, index) => 
-      `${index + 1} & ${grade.kode} & ${grade.nama} & ${grade.sks} & ${grade.nilai} \\\\`
-    ).join('\n        ');
-
-    // Format signature for LaTeX (escape special characters and handle line breaks)
-    const formatSignatureForLatex = (signatureStr) => {
-      if (!signatureStr) return '';
-      
-      // Escape special LaTeX characters
-      let formatted = signatureStr
-        .replace(/\\/g, '\\textbackslash{}')
-        .replace(/\{/g, '\\{')
-        .replace(/\}/g, '\\}')
-        .replace(/\$/g, '\\$')
-        .replace(/&/g, '\\&')
-        .replace(/%/g, '\\%')
-        .replace(/#/g, '\\#')
-        .replace(/\^/g, '\\textasciicircum{}')
-        .replace(/_/g, '\\_')
-        .replace(/~/g, '\\textasciitilde{}');
-      
-      // Break long signatures into multiple lines for better display
-      if (formatted.length > 60) {
-        const chunks = [];
-        for (let i = 0; i < formatted.length; i += 60) {
-          chunks.push(formatted.substring(i, i + 60));
-        }
-        return chunks.join(' \\\\\\\\ \n\\texttt{');
-      }
-      
-      return formatted;
-    };
-
-    const latex = `\\documentclass[11pt,a4paper]{article}
-\\usepackage[utf8]{inputenc}
-\\usepackage[margin=2cm]{geometry}
-\\usepackage{array}
-\\usepackage{longtable}
-\\usepackage{amsmath}
-\\usepackage{graphicx}
-\\usepackage{fancyhdr}
-
-\\pagestyle{fancy}
-\\fancyhf{}
-\\fancyhead[C]{Academic Transcript}
-\\fancyfoot[C]{\\thepage}
-
-\\begin{document}
-
-\\begin{center}
-{\\large\\textbf{Program Studi ${prodiName}}} \\\\
-{\\large\\textbf{Sekolah Teknik Elektro dan Informatika}} \\\\
-{\\large\\textbf{Institut Teknologi Bandung}} \\\\[1cm]
-
-{\\LARGE\\textbf{Academic Transcript}} \\\\[0.5cm]
-
-\\begin{tabular}{ll}
-Name: & ${studentName} \\\\
-NIM: & ${nim} \\\\
-\\end{tabular}
-\\end{center}
-
-\\vspace{1cm}
-
-\\begin{longtable}{|c|c|l|c|c|}
-\\hline
-\\textbf{No} & \\textbf{Kode MK} & \\textbf{Nama Mata Kuliah} & \\textbf{SKS} & \\textbf{Grade} \\\\
-\\hline
-\\endfirsthead
-
-\\hline
-\\textbf{No} & \\textbf{Kode MK} & \\textbf{Nama Mata Kuliah} & \\textbf{SKS} & \\textbf{Grade} \\\\
-\\hline
-\\endhead
-
-        ${tableRows}
-\\hline
-\\end{longtable}
-
-\\vspace{0.5cm}
-
-\\begin{center}
-\\begin{tabular}{ll}
-\\textbf{Total SKS:} & ${totalSks} \\\\
-\\textbf{Grade Point Average (GPA):} & ${gpa} \\\\
-\\end{tabular}
-\\end{center}
-
-\\vspace{2cm}
-
-\\begin{flushright}
-\\begin{minipage}{6cm}
-\\centering
-Ketua Program Studi \\\\[1cm]
-
-${signature ? `\\texttt{${formatSignatureForLatex(signature.signature)}}` : '\\textit{[Unsigned]}'} \\\\[0.5cm]
-
-${kaprodiName} \\\\
-\\end{minipage}
-\\end{flushright}
-
-\\end{document}`;
-
-    return latex;
-  };
-
   // Handle opening transcript modal
   const handleOpenTranscriptModal = async (nim, studentName, gradesData) => {
     setIsLoadingTranscriptData(true);
@@ -765,30 +639,30 @@ ${kaprodiName} \\\\
 
     setIsGeneratingTranscript(true);
     try {
-      // Get signature for the student
+      // Send the decrypted grade rows, not a LaTeX document. The template now
+      // lives on the server, so the client cannot hand arbitrary input to a TeX
+      // compiler. The server takes the student's name, program and signature
+      // from the database rather than trusting anything sent here.
+      const records = transcriptStudentData.map(grade => ({
+        kode: grade.kode,
+        nama: grade.nama,
+        sks: grade.sks,
+        nilai: grade.nilai
+      }));
+
+      // Tell the server whether the signature verified, so an unverified
+      // transcript is stamped rather than presented as authentic.
       const signature = getSignatureForStudent(transcriptNim);
-      console.log('[DEBUG] Retrieved signature for student:', transcriptNim, signature);
-      
-      // Get kaprodi name for the student's program
-      const studentProdi = userData?.prodi; // For current user's prodi or derive from student data
-      const kaprodiForProdi = kaprodiList.find(k => k.prodi === studentProdi);
-      const kaprodiName = kaprodiForProdi?.nama || 'Program Head';
+      const verified = signature
+        ? verifySignature(signature, transcriptStudentData) === true
+        : undefined;
 
-      // Generate LaTeX template
-      const latexContent = generateLatexTemplate(
-        transcriptNim,
-        transcriptStudentName,
-        transcriptStudentData,
-        signature,
-        kaprodiName
-      );
-
-      // Call transcript generation API
       const response = await transcriptApi.generateTranscript(
         transcriptNim,
-        latexContent,
+        records,
         transcriptEncrypted,
-        transcriptEncrypted ? transcriptPassword : null
+        transcriptEncrypted ? transcriptPassword : null,
+        verified
       );
 
       if (response.status === 'success' && response.data) {
@@ -802,6 +676,37 @@ ${kaprodiName} \\\\
       toast.error(`Failed to generate transcript: ${error.message}`);
     } finally {
       setIsGeneratingTranscript(false);
+    }
+  };
+
+  // Open an encrypted transcript: fetch it, decrypt it server-side with the
+  // supplied password, and hand the resulting PDF to the browser's viewer.
+  // The specification requires this interface; there was previously no way to
+  // open an encrypted transcript at all, and transcriptApi.decryptTranscript
+  // had no call site.
+  const handleOpenEncryptedTranscript = async () => {
+    if (!openEncryptedPassword.trim()) {
+      toast.error('Enter the password used to encrypt this transcript');
+      return;
+    }
+
+    setIsOpeningEncrypted(true);
+    try {
+      const blob = await transcriptApi.decryptTranscript(
+        transcriptNim,
+        openEncryptedPassword
+      );
+
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      // Give the new tab time to take ownership of the blob before releasing it.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      toast.success('Transcript decrypted');
+    } catch (error) {
+      console.error('Error opening encrypted transcript:', error);
+      toast.error(error.message || 'Failed to decrypt the transcript');
+    } finally {
+      setIsOpeningEncrypted(false);
     }
   };
 
@@ -3932,18 +3837,49 @@ ${kaprodiName} \\\\
                   <div className="flex-1">
                     <p className="text-green-800 font-medium">Transcript Generated Successfully!</p>
                     <p className="text-sm text-green-600 mb-3">
-                      {transcriptEncrypted 
-                        ? 'Your encrypted transcript is ready for download.' 
+                      {transcriptEncrypted
+                        ? 'Your encrypted transcript is ready. The stored file is RC4 ciphertext, so it must be decrypted with your password before it can be viewed.'
                         : 'Your transcript is ready for download.'}
                     </p>
+
+                    {/* Encrypted transcripts need the password to be opened. */}
+                    {transcriptEncrypted && (
+                      <div className="mb-3">
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Password used to encrypt this transcript
+                        </label>
+                        <div className="flex space-x-2">
+                          <input
+                            type="password"
+                            value={openEncryptedPassword}
+                            onChange={(e) => setOpenEncryptedPassword(e.target.value)}
+                            autoComplete="off"
+                            className="input-field flex-1"
+                            placeholder="Enter password to open"
+                            disabled={isOpeningEncrypted}
+                          />
+                          <button
+                            onClick={handleOpenEncryptedTranscript}
+                            disabled={isOpeningEncrypted}
+                            className="flex items-center space-x-2 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm disabled:opacity-50"
+                          >
+                            <Unlock className="h-4 w-4" />
+                            <span>{isOpeningEncrypted ? 'Decrypting…' : 'Decrypt & Open'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex space-x-2">
-                      <button
-                        onClick={() => window.open(generatedTranscriptUrl, '_blank')}
-                        className="flex items-center space-x-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
-                      >
-                        <FileText className="h-4 w-4" />
-                        <span>Open PDF</span>
-                      </button>
+                      {!transcriptEncrypted && (
+                        <button
+                          onClick={() => window.open(generatedTranscriptUrl, '_blank')}
+                          className="flex items-center space-x-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
+                        >
+                          <FileText className="h-4 w-4" />
+                          <span>Open PDF</span>
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           navigator.clipboard.writeText(generatedTranscriptUrl);
