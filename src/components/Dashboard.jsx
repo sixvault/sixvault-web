@@ -19,6 +19,7 @@ import {
   Unlock
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { buildSignaturePayload } from '../lib/crypto/signaturePayload';
 import { mataKuliahApi, nilaiApi, studentApi, transcriptApi, kaprodiApi } from '../lib/api/sixvaultApi';
 import { decrypt as rsaDecrypt, sign as rsaSign, verify as rsaVerify } from '../lib/crypto/RSA';
 import AES from '../lib/crypto/AES';
@@ -424,33 +425,41 @@ const Dashboard = () => {
     return signatures.find(sig => sig.nim === nim);
   };
 
-  const verifySignature = (signatureData, gradesData) => {
+  /**
+   * Verify a stored signature over a student's records.
+   *
+   * Returns 'verified' | 'tampered' | 'no-signature' | 'error' rather than a
+   * boolean, so a missing public key is distinguishable from a failed
+   * comparison — both previously rendered as the same ❌.
+   */
+  const verifySignature = (signatureData, gradesData, nim, studentName) => {
+    if (!signatureData) return 'no-signature';
+
     try {
-      // Create the JSON string in the same format as when signing
-      const sortedGrades = gradesData
-        .map(grade => ({ kode: grade.kode, nilai: grade.nilai }))
-        .sort((a, b) => a.kode.localeCompare(b.kode));
-      
-      const dataToVerify = JSON.stringify(sortedGrades);
-      
-      // Use the kaprodi public key from the signature data (from API)
       const kaprodiPublicKey = signatureData.kaprodiPublicKey;
       const signature = signatureData.signature;
-      
+
       if (!kaprodiPublicKey || !signature) {
         console.error('Missing kaprodi public key or signature data');
-        return false;
+        return 'error';
       }
-      
-      // Verify the signature using the kaprodi's public key
-      return rsaVerify(dataToVerify, signature, kaprodiPublicKey);
+
+      const dataToVerify = buildSignaturePayload(
+        nim ?? signatureData.nim,
+        studentName,
+        gradesData
+      );
+
+      return rsaVerify(dataToVerify, signature, kaprodiPublicKey)
+        ? 'verified'
+        : 'tampered';
     } catch (error) {
       console.error('Error verifying signature:', error);
-      return false;
+      return 'error';
     }
   };
 
-  const signStudentGrades = async (nim, gradesData) => {
+  const signStudentGrades = async (nim, gradesData, studentName) => {
     if (userData?.type !== 'kaprodi') {
       toast.error('Only program heads can sign academic records');
       return;
@@ -464,13 +473,10 @@ const Dashboard = () => {
         throw new Error('Private key not found. Please login again.');
       }
 
-      // Create the JSON string with sorted grades
-      const sortedGrades = gradesData
-        .map(grade => ({ kode: grade.kode, nilai: grade.nilai }))
-        .sort((a, b) => a.kode.localeCompare(b.kode));
-      
-      const dataToSign = JSON.stringify(sortedGrades);
-      
+      // Covers every field of every record plus the student's identity, built
+      // by the same helper verification uses so the two cannot drift.
+      const dataToSign = buildSignaturePayload(nim, studentName, gradesData);
+
       // Sign the data
       const signature = rsaSign(dataToSign, privateKey);
       
@@ -654,7 +660,12 @@ const Dashboard = () => {
       // transcript is stamped rather than presented as authentic.
       const signature = getSignatureForStudent(transcriptNim);
       const verified = signature
-        ? verifySignature(signature, transcriptStudentData) === true
+        ? verifySignature(
+            signature,
+            transcriptStudentData,
+            transcriptNim,
+            transcriptStudentName
+          ) === 'verified'
         : undefined;
 
       const response = await transcriptApi.generateTranscript(
@@ -2582,9 +2593,14 @@ const Dashboard = () => {
               {(() => {
                                  const signature = getSignatureForStudent(userData?.nim_nip);
                  if (signature) {
-                   const verificationResult = verifySignature(signature, studentGrades);
-                   const isVerified = verificationResult === true;
-                   const verificationFailed = verificationResult === false;
+                   const verificationResult = verifySignature(
+                     signature,
+                     studentGrades,
+                     userData?.nim_nip,
+                     userData?.nama
+                   );
+                   const isVerified = verificationResult === 'verified';
+                   const verificationFailed = verificationResult === 'tampered';
                   
                                      return (
                      <div className={`p-4 rounded-lg border ${
@@ -3189,9 +3205,14 @@ const Dashboard = () => {
                   {(() => {
                                          const signature = getSignatureForStudent(viewStudentState.nim);
                      if (signature) {
-                       const verificationResult = verifySignature(signature, viewStudentState.records);
-                       const isVerified = verificationResult === true;
-                       const verificationFailed = verificationResult === false;
+                       const verificationResult = verifySignature(
+                         signature,
+                         viewStudentState.records,
+                         viewStudentState.nim,
+                         viewStudentState.studentName
+                       );
+                       const isVerified = verificationResult === 'verified';
+                       const verificationFailed = verificationResult === 'tampered';
                       
                                              return (
                          <div className={`p-4 rounded-lg border ${
@@ -3223,6 +3244,31 @@ const Dashboard = () => {
                                    <p className="font-mono text-gray-600 break-all">{signature.signature}</p>
                                  </div>
                                )}
+                               {/* Re-signing must stay available. There is one
+                                   signature per student covering all their
+                                   records, so adding a grade invalidates it —
+                                   and the control used to disappear as soon as
+                                   a signature existed, leaving no way to
+                                   restore a valid one. */}
+                               {userData?.type === 'kaprodi' && (
+                                 <button
+                                   onClick={() => signStudentGrades(viewStudentState.nim, viewStudentState.records, viewStudentState.studentName)}
+                                   disabled={isSigningGrades}
+                                   className="mt-3 inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
+                                 >
+                                   {isSigningGrades ? (
+                                     <>
+                                       <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                                       Re-signing...
+                                     </>
+                                   ) : (
+                                     <>
+                                       <FileText className="h-4 w-4 mr-2" />
+                                       {verificationFailed ? 'Re-sign Records' : 'Re-sign (after adding grades)'}
+                                     </>
+                                   )}
+                                 </button>
+                               )}
                              </div>
                            </div>
                          </div>
@@ -3240,7 +3286,7 @@ const Dashboard = () => {
                               {/* Sign Button for Kaprodi */}
                               {userData?.type === 'kaprodi' && (
                                 <button
-                                  onClick={() => signStudentGrades(viewStudentState.nim, viewStudentState.records)}
+                                  onClick={() => signStudentGrades(viewStudentState.nim, viewStudentState.records, viewStudentState.studentName)}
                                   disabled={isSigningGrades}
                                   className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
                                 >
