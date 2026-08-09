@@ -302,8 +302,14 @@ export const AuthProvider = ({ children }) => {
       // Generate RSA key pair using password as seed
       const keyPair = await generateKeyPairFromSeed(userData.password, 2048);
       
+      // Send everything except the password. The keypair derived from it is the
+      // credential, so the password itself must never cross the wire — spreading
+      // userData wholesale was transmitting it on every registration even though
+      // the server ignores the field.
+      const { password: _password, ...safeUserData } = userData;
+
       const registrationData = {
-        ...userData,
+        ...safeUserData,
         rsaPublicKey: keyPair.publicKey
       };
 

@@ -26,7 +26,8 @@ const LandingPage = () => {
     nama: '',
     type: 'mahasiswa',
     prodi: 'teknik_informatika',
-    nim_nip_dosen_wali: ''
+    nim_nip_dosen_wali: '',
+    registration_token: ''
   });
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
@@ -127,6 +128,12 @@ const LandingPage = () => {
           newErrors.nim_nip_dosen_wali = 'Dosen Wali NIP must be exactly 18 digits';
         }
       }
+
+      // Advisor and Program Head accounts are privileged: they can enter or
+      // unlock grades, so the server requires a shared registration token.
+      if (formData.type !== 'mahasiswa' && !formData.registration_token.trim()) {
+        newErrors.registration_token = 'Registration token is required for this role';
+      }
     }
     
     setErrors(newErrors);
@@ -156,7 +163,8 @@ const LandingPage = () => {
           nama: formData.nama,
           type: formData.type,
           prodi: formData.prodi,
-          nim_nip_dosen_wali: formData.nim_nip_dosen_wali
+          nim_nip_dosen_wali: formData.nim_nip_dosen_wali,
+          registration_token: formData.registration_token
         });
       }
       
@@ -483,6 +491,36 @@ const LandingPage = () => {
                 </motion.div>
               )}
 
+              {/* Registration token (privileged roles only) */}
+              {!isLoginMode && formData.type !== 'mahasiswa' && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                >
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Registration Token <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    name="registration_token"
+                    value={formData.registration_token}
+                    onChange={handleInputChange}
+                    autoComplete="off"
+                    className={`input-field ${errors.registration_token ? 'border-red-500' : ''}`}
+                    placeholder="Enter the token issued by the administrator"
+                    disabled={isLoading}
+                  />
+                  {errors.registration_token && (
+                    <p className="text-red-500 text-xs mt-1">{errors.registration_token}</p>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    Advisor and Program Head accounts can enter and unlock grades,
+                    so they cannot be self-assigned. Ask an administrator for the token.
+                  </p>
+                </motion.div>
+              )}
+
               {/* Submit Button */}
               <motion.button
                 type="submit"
@@ -515,7 +553,7 @@ const LandingPage = () => {
                   setIsLoginMode(!isLoginMode);
                   setErrors({});
                   setMessage({ type: '', text: '' });
-                  setFormData(prev => ({ ...prev, nama: '', password: '', nim_nip_dosen_wali: '' }));
+                  setFormData(prev => ({ ...prev, nama: '', password: '', nim_nip_dosen_wali: '', registration_token: '' }));
                 }}
                 className="text-primary-600 hover:text-primary-700 text-sm font-medium"
                 disabled={isLoading}
