@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Shield, 
@@ -421,9 +421,12 @@ const Dashboard = () => {
     }
   };
 
-  const getSignatureForStudent = (nim) => {
-    return signatures.find(sig => sig.nim === nim);
-  };
+  // Memoised so the verification useMemos below can depend on it without being
+  // invalidated on every render.
+  const getSignatureForStudent = useCallback(
+    (nim) => signatures.find(sig => sig.nim === nim),
+    [signatures]
+  );
 
   /**
    * Verify a stored signature over a student's records.
@@ -458,6 +461,64 @@ const Dashboard = () => {
       return 'error';
     }
   };
+
+  // Verification is computed here, before anything renders, because the
+  // specification requires records to be verified *before* they are displayed
+  // and invalid data to be treated as altered. It was previously computed inside
+  // the banner's render block, where it could only choose a label — the table
+  // rendered regardless, so altered data was shown as though it were authentic.
+  const studentGradesVerification = useMemo(() => {
+    if (!studentGrades || studentGrades.length === 0) return 'no-signature';
+    return verifySignature(
+      getSignatureForStudent(userData?.nim_nip),
+      studentGrades,
+      userData?.nim_nip,
+      userData?.nama
+    );
+  }, [studentGrades, getSignatureForStudent, userData?.nim_nip, userData?.nama]);
+
+  const viewStudentVerification = useMemo(() => {
+    if (!viewStudentState.records || viewStudentState.records.length === 0) {
+      return 'no-signature';
+    }
+    return verifySignature(
+      getSignatureForStudent(viewStudentState.nim),
+      viewStudentState.records,
+      viewStudentState.nim,
+      viewStudentState.studentName
+    );
+  }, [viewStudentState.records, viewStudentState.nim, viewStudentState.studentName, getSignatureForStudent]);
+
+  // Explicit, per-student acknowledgement before altered data is revealed. The
+  // point is that a viewer cannot mistake tampered records for authentic ones,
+  // so the acknowledgement resets whenever the subject changes.
+  const [acknowledgedUnverified, setAcknowledgedUnverified] = useState({});
+
+  const isUnverifiedWithheld = (nim, verification) =>
+    verification === 'tampered' && !acknowledgedUnverified[nim];
+
+  const acknowledgeUnverified = (nim) =>
+    setAcknowledgedUnverified(prev => ({ ...prev, [nim]: true }));
+
+  /** Panel shown in place of withheld records. */
+  const renderWithheldRecords = (nim) => (
+    <div className="bg-red-50 border border-red-300 rounded-lg p-6 text-center">
+      <div className="text-3xl mb-2">❌</div>
+      <p className="text-red-800 font-semibold mb-1">
+        Records withheld: signature verification failed
+      </p>
+      <p className="text-red-700 text-sm mb-4">
+        These records do not match the program head's signature, so they must be
+        treated as altered. They are not shown by default.
+      </p>
+      <button
+        onClick={() => acknowledgeUnverified(nim)}
+        className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
+      >
+        Show unverified data anyway
+      </button>
+    </div>
+  );
 
   const signStudentGrades = async (nim, gradesData, studentName) => {
     if (userData?.type !== 'kaprodi') {
@@ -2600,7 +2661,6 @@ const Dashboard = () => {
                      userData?.nama
                    );
                    const isVerified = verificationResult === 'verified';
-                   const verificationFailed = verificationResult === 'tampered';
                   
                                      return (
                      <div className={`p-4 rounded-lg border ${
@@ -2655,8 +2715,14 @@ const Dashboard = () => {
             </div>
           )}
 
+          {/* Records that fail verification are withheld until acknowledged. */}
+          {!isLoadingGrades && !isDecryptingGrades && !gradesError && studentGrades.length > 0 &&
+            isUnverifiedWithheld(userData?.nim_nip, studentGradesVerification) &&
+            renderWithheldRecords(userData?.nim_nip)}
+
           {/* Grades Table */}
-          {!isLoadingGrades && !isDecryptingGrades && !gradesError && studentGrades.length > 0 && (
+          {!isLoadingGrades && !isDecryptingGrades && !gradesError && studentGrades.length > 0 &&
+           !isUnverifiedWithheld(userData?.nim_nip, studentGradesVerification) && (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse border border-gray-300">
                 <thead>
@@ -3331,8 +3397,14 @@ const Dashboard = () => {
                 </div>
               )}
 
+              {/* Withheld when the records do not match the signature. */}
+              {viewStudentState.records.length > 0 &&
+                isUnverifiedWithheld(viewStudentState.nim, viewStudentVerification) &&
+                renderWithheldRecords(viewStudentState.nim)}
+
               {/* Records Table */}
-              {viewStudentState.records.length > 0 && (
+              {viewStudentState.records.length > 0 &&
+               !isUnverifiedWithheld(viewStudentState.nim, viewStudentVerification) && (
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse border border-gray-300">
                     <thead>
