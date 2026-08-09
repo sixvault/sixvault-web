@@ -207,10 +207,12 @@ export const nilaiApi = {
   },
 
   // Request access to encrypted nilai data
-  requestAccess: async (nim, requesterNip) => {
+  // The server takes the requester from the access token; requesterNip is
+  // accepted for call-site compatibility but is no longer sent.
+  requestAccess: async (nim) => {
     return createFetchRequest('/nilai/request', {
       method: 'POST',
-      body: JSON.stringify({ nim, requester_nip: requesterNip }),
+      body: JSON.stringify({ nim }),
     });
   },
 
@@ -227,14 +229,18 @@ export const nilaiApi = {
     return response?.data?.requests ?? [];
   },
 
-  // Approve a key request
-  approveRequest: async (nim, requesterNip, approverNip) => {
+  // Record a decision on a key request.
+  // The approver identity comes from the access token, not from the body — it
+  // was previously caller-supplied, which let anyone record an approval in
+  // another advisor's name. `approverNip` is kept in the signature for
+  // call-site compatibility and deliberately not sent.
+  approveRequest: async (nim, requesterNip, _approverNip, approved = true) => {
     return createFetchRequest('/nilai/request/approve', {
       method: 'POST',
-      body: JSON.stringify({ 
-        nim, 
-        requester_nip: requesterNip, 
-        nip: approverNip 
+      body: JSON.stringify({
+        nim,
+        requester_nip: requesterNip,
+        approved,
       }),
     });
   },

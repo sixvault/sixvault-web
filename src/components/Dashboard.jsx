@@ -1070,10 +1070,13 @@ ${kaprodiName} \\\\
     }
   };
 
-  // Request management handlers
-  const handleApproveRequest = async (nim, requesterNip) => {
+  // Request management handlers.
+  // `approved` is explicit so an advisor can deny a request, not only approve
+  // it — the server previously hardcoded approval and had no way to record a
+  // refusal.
+  const handleApproveRequest = async (nim, requesterNip, approved = true) => {
     try {
-      const response = await nilaiApi.approveRequest(nim, requesterNip, userData.nim_nip);
+      const response = await nilaiApi.approveRequest(nim, requesterNip, userData.nim_nip, approved);
       if (response.message) {
         // Remove this request from shown notifications since it's now approved by us
         const requestId = `${nim}-${requesterNip}`;
@@ -3028,7 +3031,7 @@ ${kaprodiName} \\\\
                     }`}>
                       {viewStudentState.requestStatus === 'approved'
                         ? `Your request to view ${viewStudentState.studentName}'s academic records has been approved through Shamir Secret Sharing consensus.`
-                        : `Your request to view ${viewStudentState.studentName}'s academic records is waiting for colleague approval. You auto-approved (1/3), ${(viewStudentState.approvals || []).filter(a => a.approved).length} of ${viewStudentState.requiredApprovals} total approvals received.`
+                        : `Your request to view ${viewStudentState.studentName}'s academic records is waiting for colleague approval. You auto-approved (1/3), ${(viewStudentState.approvals || []).filter(a => a.approved).length} of ${viewStudentState.requiredApprovals} total approvals received. The student's own academic advisor must be one of the approvers.`
                       }
                     </p>
                     
@@ -3113,18 +3116,26 @@ ${kaprodiName} \\\\
                             Approvals: {(request.approvals || []).filter(a => a.approved).length} / {viewStudentState.requiredApprovals}
                           </p>
                         </div>
-                        <button
-                          onClick={() => handleApproveRequest(request.nim, request.requester_nip)}
-                          className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 transition-colors"
-                        >
-                          Approve
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => handleApproveRequest(request.nim, request.requester_nip, true)}
+                            className="px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 transition-colors"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => handleApproveRequest(request.nim, request.requester_nip, false)}
+                            className="px-3 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700 transition-colors"
+                          >
+                            Deny
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
               </div>
-              
-              {requestManagementState.pendingRequests.filter(req => 
+
+              {requestManagementState.pendingRequests.filter(req =>
                 req.requester_nip !== userData.nim_nip && 
                 !(req.approvals || []).some(approval => approval.nip === userData.nim_nip && approval.approved)
               ).length > 3 && (
@@ -3499,10 +3510,16 @@ ${kaprodiName} \\\\
               <div>
                 <p className="text-purple-800 font-medium">Shamir Secret Sharing Protocol</p>
                 <p className="text-purple-600 text-sm mt-1">
-                  This dashboard manages cross-program access requests using Shamir Secret Sharing. When a faculty member 
-                  requests access to a student's records outside their direct supervision, a minimum of 3 faculty approvals 
-                  are required to reconstruct the decryption key and grant access. The requester automatically provides the 
+                  This dashboard manages cross-program access requests using Shamir Secret Sharing. When a faculty member
+                  requests access to a student's records outside their direct supervision, a minimum of 3 faculty approvals
+                  are required to reconstruct the decryption key and grant access. The requester automatically provides the
                   first approval (1/3), and 2 additional colleague approvals are needed.
+                </p>
+                <p className="text-purple-700 text-sm mt-2 font-medium">
+                  Two conditions must both hold: at least 3 approvals, and the
+                  student's own academic advisor must be one of the approvers.
+                  Reaching 3 approvals without the advisor does not grant access.
+                  Only faculty who hold a share of a student's key may approve.
                 </p>
               </div>
             </div>
@@ -3643,13 +3660,31 @@ ${kaprodiName} \\\\
                           <p className="text-sm text-gray-500">
                             Current approvals: {approvedCount} / 3
                           </p>
+                          {request.viewer_is_advisor && (
+                            <p className="text-sm font-medium text-amber-700 mt-1">
+                              You are this student's academic advisor — the request
+                              cannot be granted without your approval.
+                            </p>
+                          )}
+                          {!request.viewer_is_advisor && !request.advisor_approved && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Awaiting the student's own advisor, whose approval is
+                              also required.
+                            </p>
+                          )}
                         </div>
                         <div className="flex space-x-2">
                           <button
-                            onClick={() => handleApproveRequest(request.nim, request.requester_nip)}
+                            onClick={() => handleApproveRequest(request.nim, request.requester_nip, true)}
                             className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
                           >
                             Approve
+                          </button>
+                          <button
+                            onClick={() => handleApproveRequest(request.nim, request.requester_nip, false)}
+                            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
+                          >
+                            Deny
                           </button>
                         </div>
                       </div>
