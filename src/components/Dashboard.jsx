@@ -931,24 +931,34 @@ const Dashboard = () => {
       const validCourses = studentData.mataKuliah.filter(mk => 
         mk.kode && mk.nama && mk.sks && mk.indeks
       );
+      // Credits and GPA are now sent and stored encrypted alongside the grade.
+      // They were computed here and then dropped, so the stored record was
+      // incomplete, the signature could not cover them, and credits had to be
+      // reconstructed at display time from the plaintext course catalogue.
       const nilaiData = validCourses.map(mk => ({
         nim: studentData.nim,
         kode: mk.kode,
         nama: mk.nama,
         nilai: mk.indeks,
-        nip: userData.nim_nip // Current dosen's NIP
+        sks: String(mk.sks),
+        ipk: String(ipk)
       }));
-      // Submit grades
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'}/nilai/add`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-        },
-        body: JSON.stringify(nilaiData),
-      });
-              if (response.ok) {
-          toast.success('Academic data submitted successfully!');
+
+      // Goes through the API client rather than a bare fetch, so an expired
+      // access token is refreshed and the request retried.
+      const response = await nilaiApi.addGrades(nilaiData);
+
+      if (response.status === 'success') {
+          const rejected = response.data?.rejected ?? [];
+          if (rejected.length > 0) {
+            toast.warning(
+              `${response.data.count} entries stored, ${rejected.length} rejected: ${rejected
+                .map(r => r.kode || `#${r.index + 1}`)
+                .join(', ')}`
+            );
+          } else {
+            toast.success('Academic data submitted successfully!');
+          }
           // Reset form
           setStudentData({
             nim: '',
@@ -964,12 +974,12 @@ const Dashboard = () => {
           setCourseSuggestions({});
           setShowSuggestions({});
           setActiveSuggestionIndex({});
-        } else {
-        throw new Error('Failed to submit data');
+      } else {
+        throw new Error(response.message || 'Failed to submit data');
       }
     } catch (error) {
       console.error('Error submitting academic data:', error);
-      toast.error('Error submitting data. Please try again.');
+      toast.error(error.message || 'Error submitting data. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -1067,7 +1077,9 @@ const Dashboard = () => {
           const failed = total - successful;
           const errors = serverDecryptResponse.data.errors || [];
           
-          // Enhance records with SKS from available courses if needed
+          // Credits now come decrypted from the record itself. The catalogue
+          // lookup below is only for rows created before credits were stored,
+          // which have no ciphertext to decrypt.
           const enhancedRecords = serverDecryptedRecords.map(record => {
             let sks = record.sks || '0';
             if (sks === '0') {
@@ -1420,7 +1432,7 @@ const Dashboard = () => {
               const failed = total - successful;
               const errors = serverDecryptResponse.data.errors || [];
               
-              // Enhance records with SKS from available courses if needed
+              // As above: the catalogue lookup only covers pre-migration rows.
               const enhancedRecords = serverDecryptedRecords.map(record => {
                 let sks = record.sks || '0';
                 if (sks === '0') {
@@ -1531,8 +1543,29 @@ const Dashboard = () => {
               }
             }
 
+            // The stored GPA and student name, where present. Decrypting them
+            // means they come from the record rather than being recomputed from
+            // the plaintext catalogue.
+            let storedIpk = null;
+            let storedNamaMahasiswa = null;
+            try {
+              if (record.encrypted_data.ipk) {
+                storedIpk = aes.decrypt(record.encrypted_data.ipk, decryptedAESKey);
+              }
+              if (record.encrypted_data.nama_mahasiswa) {
+                storedNamaMahasiswa = aes.decrypt(
+                  record.encrypted_data.nama_mahasiswa,
+                  decryptedAESKey
+                );
+              }
+            } catch (optionalFieldError) {
+              console.warn('[DEBUG] Failed to decrypt stored ipk/nama_mahasiswa', optionalFieldError);
+            }
+
             decryptedRecords.push({
               id: record.id,
+              ipk: storedIpk,
+              nama_mahasiswa: storedNamaMahasiswa,
               kode: decryptedKode,
               nama: decryptedNama,
               nilai: decryptedNilai,
