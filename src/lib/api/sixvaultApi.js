@@ -1,3 +1,5 @@
+import { unwrapTokenEnvelope, isValidJWT } from '../crypto/tokenEnvelope';
+
 // API base configuration
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
@@ -22,8 +24,7 @@ const createFetchRequest = async (url, options = {}) => {
       try {
         const refreshToken = localStorage.getItem('refresh_token');
         if (refreshToken) {
-          const refreshResponse = await refreshAccessToken();
-          const newToken = refreshResponse.access_token;
+          const newToken = await refreshAccessToken();
           localStorage.setItem('access_token', newToken);
           
           // Retry original request with new token
@@ -395,8 +396,26 @@ const refreshAccessToken = async () => {
   if (!response.ok) {
     throw new Error('Failed to refresh token');
   }
-  
-  return response.json();
+
+  const body = await response.json();
+
+  // The tokens arrive wrapped, exactly as login's do. This used to read
+  // `access_token` off the envelope root — where it has never existed, since the
+  // payload is nested under `data` — so the 401 retry stored undefined and every
+  // retried request failed again.
+  const unwrapped = unwrapTokenEnvelope(
+    body.data,
+    localStorage.getItem('rsa_private_key')
+  );
+
+  if (!isValidJWT(unwrapped.access_token)) {
+    throw new Error('Refreshed access token is not a valid JWT');
+  }
+
+  localStorage.setItem('refresh_token', unwrapped.refresh_token);
+  localStorage.setItem('encrypted_token_key', body.data.encrypted_token_key);
+
+  return unwrapped.access_token;
 };
 
 // Auth utilities

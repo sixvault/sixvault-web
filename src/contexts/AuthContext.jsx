@@ -4,10 +4,9 @@ import { authApi, authUtils } from '../lib/api/sixvaultApi';
 import {
   generateKeyPairFromSeed,
   generateKeyPairFromSeedLegacy,
-  decrypt as rsaDecrypt,
   sign as rsaSign
 } from '../lib/crypto/RSA';
-import AES from '../lib/crypto/AES';
+import { unwrapTokenEnvelope, isValidJWT } from '../lib/crypto/tokenEnvelope';
 
 const AuthContext = createContext();
 
@@ -84,67 +83,6 @@ export const AuthProvider = ({ children }) => {
       setIsAuthenticated(false);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const decryptTokensWithAES = (encryptedTokens, aesKey) => {
-    try {
-      const aes = new AES();
-      
-      // Decrypt access token
-      const accessToken = aes.decrypt(encryptedTokens.access_token, aesKey);
-      
-      // Decrypt refresh token
-      const refreshToken = aes.decrypt(encryptedTokens.refresh_token, aesKey);
-
-      return {
-        success: true,
-        data: {
-          access_token: accessToken,
-          refresh_token: refreshToken
-        }
-      };
-    } catch (error) {
-      console.error('Error decrypting tokens with AES:', error);
-      return {
-        success: false,
-        error: 'Failed to decrypt tokens'
-      };
-    }
-  };
-
-  const decryptAESKeyWithRSA = (encryptedAESKey, rsaPrivateKey) => {
-    try {
-      const decryptedKey = rsaDecrypt(encryptedAESKey, rsaPrivateKey);
-      return {
-        success: true,
-        data: decryptedKey
-      };
-    } catch (error) {
-      console.error('Error decrypting AES key with RSA:', error);
-      return {
-        success: false,
-        error: 'Failed to decrypt AES key'
-      };
-    }
-  };
-
-  const isValidJWT = (token) => {
-    try {
-      if (!token || typeof token !== 'string') return false;
-      
-      const parts = token.split('.');
-      if (parts.length !== 3) return false;
-      
-      // Try to decode each part to ensure it's valid base64
-      const header = JSON.parse(atob(parts[0].replace(/-/g, '+').replace(/_/g, '/')));
-      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-      
-      // Basic JWT structure checks
-      return header && payload && header.typ && payload.exp;
-    } catch (error) {
-      console.error('JWT validation error:', error);
-      return false;
     }
   };
 
@@ -249,27 +187,8 @@ export const AuthProvider = ({ children }) => {
         const { data } = response;
         
         try {
-          // Decrypt AES key using RSA private key
-          const aesKeyResult = decryptAESKeyWithRSA(data.encrypted_token_key, keyPair.privateKey);
-          
-          if (!aesKeyResult.success) {
-            throw new Error(aesKeyResult.error);
-          }
-          
-          const aesKey = aesKeyResult.data;
-          
-          // Decrypt JWT tokens using AES key
-          const decryptedTokensResult = decryptTokensWithAES({
-            access_token: data.access_token,
-            refresh_token: data.refresh_token
-          }, aesKey);
-          
-          if (!decryptedTokensResult.success) {
-            throw new Error(decryptedTokensResult.error);
-          }
-          
-          const decryptedTokens = decryptedTokensResult.data;
-          
+          const decryptedTokens = unwrapTokenEnvelope(data, keyPair.privateKey);
+
           // Validate decrypted tokens are valid JWTs
           if (!isValidJWT(decryptedTokens.access_token) || !isValidJWT(decryptedTokens.refresh_token)) {
             toast.error('Failed to decrypt valid authentication tokens. Please try again.', {
@@ -398,27 +317,8 @@ export const AuthProvider = ({ children }) => {
         const { data } = response;
         
         try {
-          // Decrypt AES key using RSA private key
-          const aesKeyResult = decryptAESKeyWithRSA(data.encrypted_token_key, keyPair.privateKey);
-          
-          if (!aesKeyResult.success) {
-            throw new Error(aesKeyResult.error);
-          }
-          
-          const aesKey = aesKeyResult.data;
-          
-          // Decrypt JWT tokens using AES key
-          const decryptedTokensResult = decryptTokensWithAES({
-            access_token: data.access_token,
-            refresh_token: data.refresh_token
-          }, aesKey);
-          
-          if (!decryptedTokensResult.success) {
-            throw new Error(decryptedTokensResult.error);
-          }
-          
-          const decryptedTokens = decryptedTokensResult.data;
-          
+          const decryptedTokens = unwrapTokenEnvelope(data, keyPair.privateKey);
+
           // Validate decrypted tokens are valid JWTs
           if (!isValidJWT(decryptedTokens.access_token) || !isValidJWT(decryptedTokens.refresh_token)) {
             toast.error('Failed to decrypt valid authentication tokens. Please try again.', {
@@ -537,49 +437,27 @@ export const AuthProvider = ({ children }) => {
   const refreshToken = async () => {
     try {
       const response = await authApi.refreshToken();
-      if (response.status === 'success') {
-        const { data } = response;
-        
-        const rsaPrivateKey = localStorage.getItem('rsa_private_key');
 
-        if (!rsaPrivateKey) {
-          throw new Error('Missing required keys for token refresh');
-        }
-        
-        // Decrypt AES key using RSA private key
-        const aesKeyResult = decryptAESKeyWithRSA(data.encrypted_token_key, rsaPrivateKey);
-        
-        if (!aesKeyResult.success) {
-          throw new Error(aesKeyResult.error);
-        }
-        
-        const aesKey = aesKeyResult.data;
-        
-        // Decrypt JWT tokens using AES key
-        const decryptedTokensResult = decryptTokensWithAES({
-          access_token: data.access_token,
-          refresh_token: data.refresh_token
-        }, aesKey);
-        
-        if (!decryptedTokensResult.success) {
-          throw new Error(decryptedTokensResult.error);
-        }
-        
-        const decryptedTokens = decryptedTokensResult.data;
-        
-        // Validate decrypted tokens are valid JWTs
-        if (!isValidJWT(decryptedTokens.access_token) || !isValidJWT(decryptedTokens.refresh_token)) {
-          throw new Error('Failed to decrypt valid JWT tokens during refresh');
-        }
-        
-        // Update stored tokens
-        localStorage.setItem('access_token', decryptedTokens.access_token);
-        localStorage.setItem('refresh_token', decryptedTokens.refresh_token);
-        localStorage.setItem('encrypted_token_key', data.encrypted_token_key);
-        
-        return true;
+      if (response.status !== 'success') {
+        return false;
       }
-      return false;
+
+      const { data } = response;
+
+      // The refresh response is wrapped exactly as login's is. It used to arrive
+      // in plaintext while this unwrapped it regardless, so every refresh threw
+      // and the 15-minute poll logged the user out.
+      const tokens = unwrapTokenEnvelope(data, localStorage.getItem('rsa_private_key'));
+
+      if (!isValidJWT(tokens.access_token) || !isValidJWT(tokens.refresh_token)) {
+        throw new Error('Failed to decrypt valid JWT tokens during refresh');
+      }
+
+      localStorage.setItem('access_token', tokens.access_token);
+      localStorage.setItem('refresh_token', tokens.refresh_token);
+      localStorage.setItem('encrypted_token_key', data.encrypted_token_key);
+
+      return true;
     } catch (error) {
       console.error('Token refresh failed:', error);
       return false;
