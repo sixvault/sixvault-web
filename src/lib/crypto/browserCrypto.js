@@ -9,19 +9,24 @@
  * @returns {Uint8Array} Random bytes
  */
 export function randomBytes(size) {
-  if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
-    // Browser environment with Web Crypto API
-    const bytes = new Uint8Array(size);
-    window.crypto.getRandomValues(bytes);
-    return bytes;
-  } else {
-    // Fallback for environments without Web Crypto API
-    const bytes = new Uint8Array(size);
-    for (let i = 0; i < size; i++) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
-    return bytes;
+  // globalThis.crypto covers both the browser and Node, where these modules are
+  // also exercised by the crypto tests.
+  const source = globalThis.crypto;
+
+  if (!source || typeof source.getRandomValues !== 'function') {
+    // This used to fall back to Math.random(), which is not a cryptographic
+    // generator: it is seeded from a small state, its output is predictable from
+    // a handful of samples, and it was being used to produce RSA primes. Failing
+    // loudly is the only safe response — silently degraded key material is worse
+    // than no key material.
+    throw new Error(
+      'No cryptographic random source available (Web Crypto getRandomValues is required)'
+    );
   }
+
+  const bytes = new Uint8Array(size);
+  source.getRandomValues(bytes);
+  return bytes;
 }
 
 /**
@@ -30,42 +35,20 @@ export function randomBytes(size) {
  * @returns {Promise<Uint8Array>} Hash digest
  */
 export async function sha256(input) {
-  if (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) {
-    // Browser environment with Web Crypto API
-    const encoder = new TextEncoder();
-    const data = encoder.encode(input);
-    const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
-    return new Uint8Array(hashBuffer);
-  } else {
-    // Fallback simple hash (not cryptographically secure - for demo only)
-    console.warn('Using fallback hash - not cryptographically secure!');
-    return simpleSHA256Fallback(input);
-  }
-}
+  const subtle = globalThis.crypto?.subtle;
 
-/**
- * Simple SHA-256 fallback implementation (not cryptographically secure)
- * This is only for demonstration purposes
- */
-function simpleSHA256Fallback(input) {
-  // This is a very simple hash function for demo purposes only
-  // In production, you would use a proper crypto library
-  const encoder = new TextEncoder();
-  const data = encoder.encode(input);
-  const hash = new Uint8Array(32);
-  
-  let h = 0x6a09e667;
-  for (let i = 0; i < data.length; i++) {
-    h = ((h << 5) - h + data[i]) & 0xffffffff;
+  if (!subtle) {
+    // There was a hand-rolled 32-bit fallback here that emitted a console
+    // warning and carried on. It had roughly no collision resistance and was
+    // feeding key derivation, so a browser without Web Crypto silently produced
+    // guessable keys. Refuse instead.
+    throw new Error(
+      'No cryptographic hash available (Web Crypto subtle.digest is required)'
+    );
   }
-  
-  // Fill hash array with derived values
-  for (let i = 0; i < 32; i++) {
-    hash[i] = (h >>> (i % 4 * 8)) & 0xff;
-    h = ((h << 7) ^ (h >>> 25)) & 0xffffffff;
-  }
-  
-  return hash;
+
+  const data = new TextEncoder().encode(input);
+  return new Uint8Array(await subtle.digest('SHA-256', data));
 }
 
 /**
