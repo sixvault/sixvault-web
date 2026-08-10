@@ -30,4 +30,13 @@ export default [
       ],
     },
   },
+  {
+    // The hand-written *test.js files are run with node, not bundled into the
+    // app, so they legitimately use process.exit to report a failing run. Linting
+    // them as browser-only code flagged that as an undefined global.
+    files: ['**/*test.js'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
 ]
