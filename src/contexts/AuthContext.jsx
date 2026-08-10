@@ -4,7 +4,8 @@ import { authApi, authUtils } from '../lib/api/sixvaultApi';
 import {
   generateKeyPairFromSeed,
   generateKeyPairFromSeedLegacy,
-  decrypt as rsaDecrypt
+  decrypt as rsaDecrypt,
+  sign as rsaSign
 } from '../lib/crypto/RSA';
 import AES from '../lib/crypto/AES';
 
@@ -166,6 +167,24 @@ export const AuthProvider = ({ children }) => {
   };
 
   /**
+   * Prove possession of a private key by signing a fresh server nonce.
+   *
+   * The server no longer accepts a public key as proof of anything — knowing one
+   * granted a login, and public keys are not secrets. Returns null if no
+   * challenge could be obtained.
+   */
+  const signChallenge = async (nimNip, privateKey) => {
+    const response = await authApi.challenge(nimNip);
+
+    if (response.status !== 'success' || !response.data?.nonce) {
+      return null;
+    }
+
+    const { nonce } = response.data;
+    return { nonce, signature: rsaSign(nonce, privateKey) };
+  };
+
+  /**
    * Move an account created under the old derivation onto the current one.
    *
    * Key derivation is now salted and stretched and honours the requested modulus
@@ -174,20 +193,26 @@ export const AuthProvider = ({ children }) => {
    * re-wraps the account's grade keys as part of the swap; it can, because it
    * reconstructs those keys from the shares it already holds.
    *
-   * Returns the new keypair if the account was migrated, otherwise null.
+   * Returns true if the account was migrated.
    */
   const rekeyIfLegacy = async (nimNip, password, newKeyPair) => {
     const legacyKeyPair = await generateKeyPairFromSeedLegacy(password);
 
+    // Signed with the legacy private key, which is what the server still has on
+    // file for an unmigrated account.
+    const proof = await signChallenge(nimNip, legacyKeyPair.privateKey);
+
+    if (!proof) return false;
+
     const response = await authApi.rekey({
       nim_nip: nimNip,
-      old_rsaPublicKey: legacyKeyPair.publicKey,
-      new_rsaPublicKey: newKeyPair.publicKey
+      new_rsaPublicKey: newKeyPair.publicKey,
+      ...proof
     });
 
-    // A failure here means the legacy key did not match either, so the password
-    // is simply wrong. Report it as such rather than as a migration problem.
-    return response.status === 'success' ? newKeyPair : null;
+    // A failure here means the legacy key was not on file either, so the
+    // password is simply wrong — not a migration problem.
+    return response.status === 'success';
   };
 
   const login = async (nimNip, password) => {
@@ -198,20 +223,25 @@ export const AuthProvider = ({ children }) => {
       // two users sharing a password do not share a keypair.
       const keyPair = await generateKeyPairFromSeed(password, 2048, nimNip);
 
-      const credentials = {
-        nim_nip: nimNip,
-        rsaPublicKey: keyPair.publicKey
-      };
+      // Authentication is challenge-response: sign a fresh server nonce with the
+      // derived private key. The public key is no longer accepted as proof,
+      // because knowing one is not a secret.
+      const proof = await signChallenge(nimNip, keyPair.privateKey);
 
-      let response = await authApi.login(credentials);
+      if (!proof) {
+        return { success: false, error: 'Could not obtain a login challenge' };
+      }
+
+      let response = await authApi.login({ nim_nip: nimNip, ...proof });
 
       // The stored key may predate the derivation change. Prove ownership with
-      // the old key once, swap it for the new one, and continue.
-      if (response.status !== 'success') {
-        const migrated = await rekeyIfLegacy(nimNip, password, keyPair);
+      // the old key once, swap it for the new one, and retry with a fresh
+      // challenge — the first one has been spent.
+      if (response.status !== 'success' && (await rekeyIfLegacy(nimNip, password, keyPair))) {
+        const retryProof = await signChallenge(nimNip, keyPair.privateKey);
 
-        if (migrated) {
-          response = await authApi.login(credentials);
+        if (retryProof) {
+          response = await authApi.login({ nim_nip: nimNip, ...retryProof });
         }
       }
 

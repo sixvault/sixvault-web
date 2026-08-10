@@ -75,12 +75,23 @@ export const authApi = {
     });
   },
 
-  // Replace the stored public key, proving ownership with the current one.
-  // Used to migrate accounts created under the old key derivation.
-  rekey: async ({ nim_nip, old_rsaPublicKey, new_rsaPublicKey }) => {
+  // Request a single-use nonce to sign. Login and rekey both prove possession of
+  // the private key by signing one of these, so that knowing an account's public
+  // key grants nothing.
+  challenge: async (nimNip) => {
+    return createFetchRequest('/user/auth/challenge', {
+      method: 'POST',
+      body: JSON.stringify({ nim_nip: nimNip }),
+    });
+  },
+
+  // Replace the stored public key, proving possession of the current one by
+  // signing a challenge with it. Migrates accounts created under the old key
+  // derivation.
+  rekey: async ({ nim_nip, new_rsaPublicKey, nonce, signature }) => {
     return createFetchRequest('/user/auth/rekey', {
       method: 'POST',
-      body: JSON.stringify({ nim_nip, old_rsaPublicKey, new_rsaPublicKey }),
+      body: JSON.stringify({ nim_nip, new_rsaPublicKey, nonce, signature }),
     });
   },
 
