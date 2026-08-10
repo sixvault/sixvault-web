@@ -2115,7 +2115,7 @@ const Dashboard = () => {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Private Key (Protected)
+              Private Key (hidden)
             </label>
             <textarea
               readOnly
@@ -2123,8 +2123,10 @@ const Dashboard = () => {
               className="w-full p-3 border border-gray-300 rounded-lg bg-gray-50 text-xs font-mono"
               rows={4}
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Private key is securely stored and encrypted
+            <p className="text-xs text-amber-700 mt-1">
+              Masked here, but held unencrypted in this browser&apos;s local storage
+              for the session. It is re-derived from your password at each login and
+              is never sent to the server. Sign out on shared devices.
             </p>
           </div>
         </div>

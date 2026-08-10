@@ -56,6 +56,11 @@ export const AuthProvider = ({ children }) => {
 
   const checkAuthStatus = () => {
     try {
+      // Earlier builds kept the raw password in localStorage. Nothing reads it
+      // any more, so purge it on load rather than waiting for the next logout —
+      // otherwise it survives indefinitely in existing sessions.
+      localStorage.removeItem('user_password');
+
       const currentUser = authUtils.getCurrentUser();
       if (currentUser && authUtils.isAuthenticated()) {
         // Get user data from localStorage
@@ -234,8 +239,7 @@ export const AuthProvider = ({ children }) => {
           // Save RSA keys
           localStorage.setItem('rsa_public_key', keyPair.publicKey);
           localStorage.setItem('rsa_private_key', keyPair.privateKey);
-          localStorage.setItem('user_password', password); // Store for key regeneration
-          
+
           // Save user profile data - use only backend response data
           const userData = {
             nim_nip: data.nim_nip,
@@ -379,8 +383,7 @@ export const AuthProvider = ({ children }) => {
           // Save RSA keys
           localStorage.setItem('rsa_public_key', keyPair.publicKey);
           localStorage.setItem('rsa_private_key', keyPair.privateKey);
-          localStorage.setItem('user_password', userData.password); // Store for key regeneration
-          
+
           // Save user profile data
           const userProfile = {
             ...userData,
@@ -448,6 +451,8 @@ export const AuthProvider = ({ children }) => {
     
     // Clear all stored data
     authUtils.logout();
+    // Legacy key from builds that persisted the raw password. Removed here too so
+    // an explicit logout clears it even if checkAuthStatus never ran.
     localStorage.removeItem('user_password');
     
     setUser(null);
@@ -460,11 +465,9 @@ export const AuthProvider = ({ children }) => {
       if (response.status === 'success') {
         const { data } = response;
         
-        // Get stored keys and password
         const rsaPrivateKey = localStorage.getItem('rsa_private_key');
-        const password = localStorage.getItem('user_password');
-        
-        if (!rsaPrivateKey || !password) {
+
+        if (!rsaPrivateKey) {
           throw new Error('Missing required keys for token refresh');
         }
         
