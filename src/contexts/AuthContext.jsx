@@ -1,7 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { toast } from 'react-toastify';
 import { authApi, authUtils } from '../lib/api/sixvaultApi';
-import { generateKeyPairFromSeed, decrypt as rsaDecrypt } from '../lib/crypto/RSA';
+import {
+  generateKeyPairFromSeed,
+  generateKeyPairFromSeedLegacy,
+  decrypt as rsaDecrypt
+} from '../lib/crypto/RSA';
 import AES from '../lib/crypto/AES';
 
 const AuthContext = createContext();
@@ -161,20 +165,56 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  /**
+   * Move an account created under the old derivation onto the current one.
+   *
+   * Key derivation is now salted and stretched and honours the requested modulus
+   * size, so every keypair changed. The keypair is the credential, so without
+   * this an existing account would simply stop authenticating. The server
+   * re-wraps the account's grade keys as part of the swap; it can, because it
+   * reconstructs those keys from the shares it already holds.
+   *
+   * Returns the new keypair if the account was migrated, otherwise null.
+   */
+  const rekeyIfLegacy = async (nimNip, password, newKeyPair) => {
+    const legacyKeyPair = await generateKeyPairFromSeedLegacy(password);
+
+    const response = await authApi.rekey({
+      nim_nip: nimNip,
+      old_rsaPublicKey: legacyKeyPair.publicKey,
+      new_rsaPublicKey: newKeyPair.publicKey
+    });
+
+    // A failure here means the legacy key did not match either, so the password
+    // is simply wrong. Report it as such rather than as a migration problem.
+    return response.status === 'success' ? newKeyPair : null;
+  };
+
   const login = async (nimNip, password) => {
     try {
       setLoading(true);
-      
-      // Generate RSA key pair using password as seed
-      const keyPair = await generateKeyPairFromSeed(password, 2048);
-      
+
+      // Derive the keypair from the password, salted with the user's id so that
+      // two users sharing a password do not share a keypair.
+      const keyPair = await generateKeyPairFromSeed(password, 2048, nimNip);
+
       const credentials = {
         nim_nip: nimNip,
         rsaPublicKey: keyPair.publicKey
       };
 
-      const response = await authApi.login(credentials);
-      
+      let response = await authApi.login(credentials);
+
+      // The stored key may predate the derivation change. Prove ownership with
+      // the old key once, swap it for the new one, and continue.
+      if (response.status !== 'success') {
+        const migrated = await rekeyIfLegacy(nimNip, password, keyPair);
+
+        if (migrated) {
+          response = await authApi.login(credentials);
+        }
+      }
+
       if (response.status === 'success') {
         const { data } = response;
         
@@ -303,8 +343,13 @@ export const AuthProvider = ({ children }) => {
     try {
       setLoading(true);
       
-      // Generate RSA key pair using password as seed
-      const keyPair = await generateKeyPairFromSeed(userData.password, 2048);
+      // Derive the keypair from the password, salted with the user's id so that
+      // two users sharing a password do not share a keypair.
+      const keyPair = await generateKeyPairFromSeed(
+        userData.password,
+        2048,
+        userData.nim_nip
+      );
       
       // Send everything except the password. The keypair derived from it is the
       // credential, so the password itself must never cross the wire — spreading
@@ -528,9 +573,17 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const regenerateKeysFromPassword = async (password) => {
+  const regenerateKeysFromPassword = async (password, nimNip) => {
     try {
-      const keyPair = await generateKeyPairFromSeed(password, 2048);
+      // The salt must be the same id the keypair was originally derived under,
+      // or the regenerated key will not match the one the server has stored.
+      const salt = nimNip ?? getUserData()?.nim_nip;
+
+      if (!salt) {
+        throw new Error('Cannot regenerate keys without the user\'s nim_nip');
+      }
+
+      const keyPair = await generateKeyPairFromSeed(password, 2048, salt);
       localStorage.setItem('rsa_public_key', keyPair.publicKey);
       localStorage.setItem('rsa_private_key', keyPair.privateKey);
       return keyPair;

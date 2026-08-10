@@ -113,7 +113,7 @@ const LandingPage = () => {
     if (!formData.password.trim()) {
       newErrors.password = 'Password is required';
     } else if (!validationUtils.validatePassword(formData.password)) {
-      newErrors.password = 'Password must be at least 6 characters';
+      newErrors.password = `Password must be at least ${validationUtils.MIN_PASSWORD_LENGTH} characters`;
     }
     
     if (!isLoginMode) {

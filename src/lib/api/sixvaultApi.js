@@ -75,6 +75,15 @@ export const authApi = {
     });
   },
 
+  // Replace the stored public key, proving ownership with the current one.
+  // Used to migrate accounts created under the old key derivation.
+  rekey: async ({ nim_nip, old_rsaPublicKey, new_rsaPublicKey }) => {
+    return createFetchRequest('/user/auth/rekey', {
+      method: 'POST',
+      body: JSON.stringify({ nim_nip, old_rsaPublicKey, new_rsaPublicKey }),
+    });
+  },
+
   // Refresh access token
   refreshToken: async () => {
     return createFetchRequest('/user/auth/refresh-token', {
@@ -438,9 +447,15 @@ export const validationUtils = {
     return ['A', 'AB', 'B', 'BC', 'C', 'D'].includes(nilai);
   },
 
-  // Validate password - minimum 6 characters
+  // The password is the only secret in the system: the RSA keypair derived from
+  // it is both the login credential and the means of decrypting records, and
+  // there is no server-side rate limit or lockout to fall back on. Six
+  // characters was well inside brute-force range for an attacker holding a
+  // public key.
+  MIN_PASSWORD_LENGTH: 12,
+
   validatePassword: (password) => {
-    return password && password.length >= 6;
+    return Boolean(password) && password.length >= validationUtils.MIN_PASSWORD_LENGTH;
   },
 }; 
 // Remove axios default export since we're using fetch now 

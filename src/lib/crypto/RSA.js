@@ -139,56 +139,178 @@ async function generateKeyPair(bits = 1024) {
   };
 }
 
-// Generate a deterministic random BigInt from a seed
-async function seededRandomBigInt(seed, min, max) {
-  const range = max - min + 1n;
-  const byteLength = Math.ceil(range.toString(2).length / 8);
-  
-  // Create a deterministic hash from the seed
-  const hasher = crypto.createHash('sha256');
-  hasher.update(seed);
-  const hash = await hasher.digest();
-  let rnd = BigInt('0x' + hash.toString('hex'));
-  
-  // Ensure the number is within range
-  rnd = rnd % range;
-  return rnd + min;
-}
+// --- password-derived keys ------------------------------------------------
+//
+// The keypair *is* the credential and the decryption capability, and it is
+// derived from the password alone, so the strength of the derivation is the
+// strength of the whole scheme. Three things were wrong:
+//
+//   - generateSeededPrime ignored its `bits` argument. It hashed the seed once
+//     with SHA-256 and used that digest as the candidate, so every prime was
+//     256 bits and every modulus ~512 bits no matter that callers asked for
+//     2048.
+//   - There was no stretching, so the cost of guessing a key equalled the cost
+//     of hashing a password guess.
+//   - There was no salt, so two users with the same password got the same
+//     keypair — and therefore each could log in as the other — and one
+//     precomputed table would cover every user.
+//
+// Everything here is built on the project's own SHA-3, so no primitive is
+// imported.
 
-// Generate a deterministic prime number from a seed
-async function generateSeededPrime(seed, bits = 1024) {
-  const bytes = Math.ceil(bits / 8);
-  const hasher = crypto.createHash('sha256');
-  hasher.update(seed);
-  const hash = await hasher.digest();
-  const buf = Buffer.from(hash.toString('hex'), 'hex');
-  buf.data[0] |= 0b10000000; // Set top bit to ensure bit length
-  buf.data[buf.data.length - 1] |= 1; // Ensure odd number
-  
-  let prime = BigInt('0x' + buf.toString('hex'));
-  while (!isProbablyPrime(prime)) {
-    // If not prime, generate next candidate using the previous number as seed
-    const nextSeed = prime.toString();
-    const nextHasher = crypto.createHash('sha256');
-    nextHasher.update(nextSeed);
-    const nextHash = await nextHasher.digest();
-    const nextBuf = Buffer.from(nextHash.toString('hex'), 'hex');
-    nextBuf.data[0] |= 0b10000000;
-    nextBuf.data[nextBuf.data.length - 1] |= 1;
-    prime = BigInt('0x' + nextBuf.toString('hex'));
+// Trial division before Miller-Rabin. Composite candidates are the common case
+// during a prime search and almost all of them have a small factor, so this is
+// what keeps a 2048-bit derivation to tens of milliseconds.
+const SMALL_PRIMES = (() => {
+  const limit = 4096;
+  const sieve = new Uint8Array(limit);
+  const primes = [];
+  for (let i = 2; i < limit; i++) {
+    if (!sieve[i]) {
+      primes.push(BigInt(i));
+      for (let j = i * i; j < limit; j += i) sieve[j] = 1;
+    }
   }
-  return prime;
+  return primes;
+})();
+
+// Fixed Miller-Rabin bases. The random-base test used elsewhere in this file is
+// fine for generating a fresh key, but not here: a composite that passed on one
+// run and failed on another would yield a different keypair for the same
+// password, locking the user out of their own records.
+const MR_BASES = [2n, 3n, 5n, 7n, 11n, 13n, 17n, 19n, 23n, 29n, 31n, 37n];
+
+function isDeterministicallyPrime(n) {
+  for (const p of SMALL_PRIMES) {
+    if (n === p) return true;
+    if (n % p === 0n) return false;
+  }
+
+  let d = n - 1n;
+  let r = 0n;
+  while (d % 2n === 0n) {
+    d /= 2n;
+    r += 1n;
+  }
+
+  for (const a of MR_BASES) {
+    let x = modPow(a, d, n);
+    if (x === 1n || x === n - 1n) continue;
+
+    let witnessed = false;
+    for (let i = 0n; i < r - 1n; i++) {
+      x = (x * x) % n;
+      if (x === n - 1n) {
+        witnessed = true;
+        break;
+      }
+    }
+    if (!witnessed) return false;
+  }
+
+  return true;
 }
 
-// Generate RSA key pair from a seed
-async function generateKeyPairFromSeed(seed, bits = 1024) {
-  // Generate first prime
-  const p = await generateSeededPrime(seed, bits / 2);
-  
-  // Generate second prime using the first prime as part of the seed
-  const secondSeed = seed + p.toString();
-  const q = await generateSeededPrime(secondSeed, bits / 2);
-  
+// Iterations of SHA-3 applied to the password before anything else. Deliberately
+// slow: this is the only thing standing between a leaked public key and the
+// private key that matches it. Raising it invalidates every existing keypair.
+const STRETCH_ITERATIONS = 10000;
+
+/**
+ * Stretch a password into a seed digest, salted with the user's id.
+ *
+ * @param {string} password
+ * @param {string} salt  the user's nim_nip
+ * @returns {string} hex digest
+ */
+function stretchSeed(password, salt) {
+  const digest = (text) => keccak(Array.from(new TextEncoder().encode(text)), 256);
+
+  let h = digest(`sixvault|v2|${salt}|${password}`);
+  for (let i = 0; i < STRETCH_ITERATIONS; i++) {
+    // The counter is included so the chain cannot fall into a short cycle.
+    h = digest(`${h}|${i}`);
+  }
+  return h;
+}
+
+/**
+ * Expand a seed digest into a candidate of exactly `bits` bits.
+ *
+ * Counter-mode: as many digest blocks as the requested width needs, rather than
+ * the single 256-bit digest that silently capped the key size.
+ */
+function expandToCandidate(seedHex, label, bits) {
+  const byteLength = Math.ceil(bits / 8);
+  let hex = '';
+  for (let counter = 0; hex.length / 2 < byteLength; counter++) {
+    hex += keccak(
+      Array.from(new TextEncoder().encode(`${seedHex}|${label}|${counter}`)),
+      256
+    );
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  for (let i = 0; i < byteLength; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+
+  // Top two bits set so that p * q is always exactly `bits * 2` wide, and the
+  // low bit set so the search starts on an odd number.
+  bytes[0] |= 0b11000000;
+  bytes[byteLength - 1] |= 1;
+
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+/**
+ * The first probable prime at or above `candidate`, stepping by two.
+ *
+ * Searching upward preserves the candidate's bit length. The previous code
+ * re-hashed on every miss, which is both slower and why the requested size was
+ * never honoured.
+ */
+function nextPrimeFrom(candidate) {
+  let value = candidate;
+  while (!isDeterministicallyPrime(value)) value += 2n;
+  return value;
+}
+
+// Generate a deterministic prime number from a stretched seed
+function generateSeededPrime(seedHex, label, bits) {
+  return nextPrimeFrom(expandToCandidate(seedHex, label, bits));
+}
+
+/**
+ * Derive an RSA keypair deterministically from a password.
+ *
+ * @param {string} password
+ * @param {number} bits    modulus size; honoured, unlike before
+ * @param {string} salt    the user's nim_nip. Required: without it, identical
+ *                         passwords across users produce identical keypairs.
+ */
+async function generateKeyPairFromSeed(password, bits = 2048, salt) {
+  if (typeof salt !== 'string' || salt.length === 0) {
+    throw new Error(
+      'generateKeyPairFromSeed requires a salt (the user\'s nim_nip)'
+    );
+  }
+
+  const seed = stretchSeed(password, salt);
+
+  const p = generateSeededPrime(seed, 'p', bits / 2);
+  let q = generateSeededPrime(seed, 'q', bits / 2);
+
+  // Astronomically unlikely, but p === q would make the modulus a perfect
+  // square and the key trivially factorable.
+  let attempt = 0;
+  while (q === p) {
+    attempt += 1;
+    q = generateSeededPrime(seed, `q${attempt}`, bits / 2);
+  }
+
   const n = p * q;
   const phi = (p - 1n) * (q - 1n);
   const e = 65537n; // Common public exponent
@@ -259,9 +381,56 @@ function verify(message, signature, publicKeyBase64) {
   return decryptedSignature === bytesToLong(messageHash);
 }
 
+/**
+ * The pre-v2 derivation: a single SHA-256 digest as the prime candidate, no
+ * salt, no stretching, and a hash chain for the candidate search — hence a
+ * ~512-bit modulus whatever `bits` said.
+ *
+ * Retained only so a user whose account predates the change can prove ownership
+ * once and be re-keyed; see rekeyIfLegacy in AuthContext. Nothing else may call
+ * it, and it should be deleted once no legacy accounts remain.
+ */
+async function generateKeyPairFromSeedLegacy(seed) {
+  const legacyPrime = async (chainSeed) => {
+    const digest = async (text) => {
+      const hasher = crypto.createHash('sha256');
+      hasher.update(text);
+      const hash = await hasher.digest();
+      const buf = Buffer.from(hash.toString('hex'), 'hex');
+      buf.data[0] |= 0b10000000;
+      buf.data[buf.data.length - 1] |= 1;
+      return BigInt('0x' + buf.toString('hex'));
+    };
+
+    let prime = await digest(chainSeed);
+    while (!isProbablyPrime(prime)) {
+      prime = await digest(prime.toString());
+    }
+    return prime;
+  };
+
+  const p = await legacyPrime(seed);
+  const q = await legacyPrime(seed + p.toString());
+
+  const n = p * q;
+  const phi = (p - 1n) * (q - 1n);
+  const e = 65537n;
+  const d = modInverse(e, phi);
+
+  return {
+    publicKey: Buffer.from(
+      JSON.stringify({ e: bytesToBase64(longToBytes(e)), n: bytesToBase64(longToBytes(n)) })
+    ).toString('base64'),
+    privateKey: Buffer.from(
+      JSON.stringify({ d: bytesToBase64(longToBytes(d)), n: bytesToBase64(longToBytes(n)) })
+    ).toString('base64')
+  };
+}
+
 export {
   generateKeyPair,
   generateKeyPairFromSeed,
+  generateKeyPairFromSeedLegacy,
   encrypt,
   decrypt,
   sign,
