@@ -59,9 +59,20 @@ function keccakF1600(state) {
   }
 }
 
+// pad10*1 with the SHA-3 domain separator (0x06 head, 0x80 tail). The result is
+// always a whole number of blocks: an input already on a block boundary gets a
+// full block of padding.
 function keccakPad(rate, inputBytes) {
   const padLen = rate - (inputBytes.length % rate);
   const padded = [...inputBytes];
+
+  // With one byte of room the head and tail have to share it. Emitting both
+  // bytes here overran the block, leaving a padded length that was not a
+  // multiple of the rate, and the absorb loop then read past the end.
+  if (padLen === 1) {
+    padded.push(0x86);
+    return padded;
+  }
 
   padded.push(0x06);
   for (let i = 1; i < padLen - 1; i++) padded.push(0x00);
