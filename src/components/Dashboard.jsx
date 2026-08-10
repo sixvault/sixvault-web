@@ -21,6 +21,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { buildSignaturePayload } from '../lib/crypto/signaturePayload';
 import { deriveRecordKey } from '../lib/crypto/recordKey';
+import { GRADE_POINTS, computeGPA, computeTotalCredits, roundGPA } from '../lib/gpa';
 import { mataKuliahApi, nilaiApi, studentApi, transcriptApi, kaprodiApi } from '../lib/api/sixvaultApi';
 import { decrypt as rsaDecrypt, sign as rsaSign, verify as rsaVerify } from '../lib/crypto/RSA';
 import AES from '../lib/crypto/AES';
@@ -348,9 +349,14 @@ const Dashboard = () => {
         }
       };
 
-                    // Poll every 1 second
-       const interval = setInterval(pollPendingRequests, 1000);
-       
+      // Approval requests are a human-paced workflow — a colleague deciding
+      // whether to approve — so a one-second poll made 3,600 authenticated
+      // requests an hour per signed-in advisor to observe something that changes
+      // a few times a day. The visibility listener below covers the case that
+      // actually matters: the advisor coming back to the tab.
+      const POLL_INTERVAL_MS = 30 * 1000;
+      const interval = setInterval(pollPendingRequests, POLL_INTERVAL_MS);
+
        // Poll immediately when tab becomes visible again
        const handleVisibilityChange = () => {
          if (!document.hidden) {
@@ -409,15 +415,9 @@ const Dashboard = () => {
     }
   }, [viewStudentState.hasActiveRequest, viewStudentState.pendingRequestId, userData?.nim_nip]);
 
-  // Grade point mapping
-  const gradePoints = {
-    'A': 4.0,
-    'AB': 3.5,
-    'B': 3.0,
-    'BC': 2.5,
-    'C': 2.0,
-    'D': 1.0
-  };
+  // Shared with the GPA helper so the mapping cannot drift between them, and
+  // module-scoped so its identity is stable across renders.
+  const gradePoints = GRADE_POINTS;
 
   // Signature management functions
   /**
@@ -598,25 +598,13 @@ const Dashboard = () => {
 
   // Calculate IPK automatically (moved to top level)
   useEffect(() => {
-    const validCourses = studentData.mataKuliah.filter(mk => 
+    const validCourses = studentData.mataKuliah.filter(mk =>
       mk.kode && mk.nama && mk.sks && mk.indeks
     );
-    
-    if (validCourses.length > 0) {
-      const totalPoints = validCourses.reduce((sum, mk) => {
-        return sum + (gradePoints[mk.indeks] * parseInt(mk.sks) || 0);
-      }, 0);
-      
-      const totalSks = validCourses.reduce((sum, mk) => {
-        return sum + (parseInt(mk.sks) || 0);
-      }, 0);
-      
-      const calculatedIpk = totalSks > 0 ? totalPoints / totalSks : 0;
-      setIpk(Math.round(calculatedIpk * 100) / 100);
-    } else {
-      setIpk(0);
-    }
-  }, [studentData.mataKuliah, gradePoints]);
+
+    // Grade entry names the grade `indeks`; stored records call it `nilai`.
+    setIpk(roundGPA(computeGPA(validCourses, { gradeKey: 'indeks' })));
+  }, [studentData.mataKuliah]);
 
   // Clean up old approved requests from localStorage
   useEffect(() => {
@@ -1012,17 +1000,13 @@ const Dashboard = () => {
     if (!studentData.nim) return;
     
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'}/student/search`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-        },
-        body: JSON.stringify({ nim_nip: studentData.nim }),
-      });
+      // Goes through the API layer rather than a bare fetch, so it picks up the
+      // 401 retry and token refresh every other call already gets. Called with a
+      // stale access token, the raw version simply failed silently and left the
+      // name field empty.
+      const result = await studentApi.searchStudent(studentData.nim);
 
-      if (response.ok) {
-        const result = await response.json();
+      if (result.status === 'success' && result.data?.nama) {
         setStudentData(prev => ({
           ...prev,
           namaLengkap: result.data.nama
@@ -1404,9 +1388,14 @@ const Dashboard = () => {
       } catch (gradesError) {
         console.log('[DEBUG] Grades Error caught:', gradesError.message);
         // Check if this is an unauthorized access error
-        if (gradesError.message.includes('403') || 
+        // The server now reports this denial as 403 with an error envelope rather
+        // than a 200 "success" carrying an explanatory sentence, so it arrives
+        // here as a thrown error. "not authorized" is matched because that is the
+        // wording of the message the 403 carries.
+        if (gradesError.message.includes('403') ||
             gradesError.message.includes('Unauthorized') ||
-            gradesError.message.includes('Unauthorized to view this data') ||
+            gradesError.message.includes('not authorized') ||
+            gradesError.message.includes('Request group based decryption') ||
             gradesError.message.includes('Forbidden')) {
           console.log('[DEBUG] Detected unauthorized access via catch block');
           isUnauthorizedAccess = true;
@@ -2612,29 +2601,8 @@ const Dashboard = () => {
   };
 
   const renderStudentGrades = () => {
-    // Calculate GPA
-    const calculateGPA = () => {
-      if (studentGrades.length === 0) return 0;
-      
-      const validGrades = studentGrades.filter(grade => 
-        grade.nilai && grade.sks && gradePoints[grade.nilai]
-      );
-      
-      if (validGrades.length === 0) return 0;
-      
-      const totalPoints = validGrades.reduce((sum, grade) => {
-        return sum + (gradePoints[grade.nilai] * parseInt(grade.sks || 0));
-      }, 0);
-      
-      const totalSks = validGrades.reduce((sum, grade) => {
-        return sum + parseInt(grade.sks || 0);
-      }, 0);
-      
-      return totalSks > 0 ? totalPoints / totalSks : 0;
-    };
-
-    const gpa = calculateGPA();
-    const totalSks = studentGrades.reduce((sum, grade) => sum + parseInt(grade.sks || 0), 0);
+    const gpa = computeGPA(studentGrades);
+    const totalSks = computeTotalCredits(studentGrades);
 
     return (
       <div className="space-y-6">
@@ -2929,39 +2897,8 @@ const Dashboard = () => {
 
   const renderViewStudentRecords = () => {
     // Calculate GPA for the viewed student
-    const calculateStudentGPA = () => {
-      if (viewStudentState.records.length === 0) return 0;
-      
-      console.log('[DEBUG] Calculating GPA for records:', viewStudentState.records);
-      
-      const validGrades = viewStudentState.records.filter(grade => 
-        grade.nilai && grade.sks && gradePoints[grade.nilai]
-      );
-      
-      console.log('[DEBUG] Valid grades for GPA calculation:', validGrades);
-      console.log('[DEBUG] Filtered out records:', viewStudentState.records.filter(grade => 
-        !grade.nilai || !grade.sks || !gradePoints[grade.nilai]
-      ));
-      
-      if (validGrades.length === 0) return 0;
-      
-      const totalPoints = validGrades.reduce((sum, grade) => {
-        const points = gradePoints[grade.nilai] * parseInt(grade.sks || 0);
-        console.log('[DEBUG] Grade:', grade.nilai, 'SKS:', grade.sks, 'Points:', points);
-        return sum + points;
-      }, 0);
-      
-      const totalSks = validGrades.reduce((sum, grade) => {
-        return sum + parseInt(grade.sks || 0);
-      }, 0);
-      
-      console.log('[DEBUG] Total points:', totalPoints, 'Total SKS:', totalSks);
-      
-      return totalSks > 0 ? totalPoints / totalSks : 0;
-    };
-
-    const studentGPA = calculateStudentGPA();
-    const totalSks = viewStudentState.records.reduce((sum, grade) => sum + parseInt(grade.sks || 0), 0);
+    const studentGPA = computeGPA(viewStudentState.records);
+    const totalSks = computeTotalCredits(viewStudentState.records);
     const userTypeLabel = userData?.type === 'kaprodi' ? 'Program Head' : 'Academic Advisor';
 
     return (
