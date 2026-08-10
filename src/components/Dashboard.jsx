@@ -68,6 +68,10 @@ const Dashboard = () => {
   // Signature management state
   const [signatures, setSignatures] = useState([]);
   const [isLoadingSignatures, setIsLoadingSignatures] = useState(false);
+
+  // Shares this advisor holds, per student. Populated for dosen_wali only.
+  const [shareHoldings, setShareHoldings] = useState(null);
+  const [isLoadingShares, setIsLoadingShares] = useState(false);
   const [isSigningGrades, setIsSigningGrades] = useState(false);
   
   // View student records state (for kaprodi and dosen_wali)
@@ -154,6 +158,13 @@ const Dashboard = () => {
       loadKaprodiData();
     }
   }, [transcriptModalOpen]);
+
+  // An advisor's own share holdings, shown on the group-decryption tab.
+  useEffect(() => {
+    if (userData?.type === 'dosen_wali' && activeTab === 'group-requests') {
+      loadShareHoldings();
+    }
+  }, [userData, activeTab]);
 
   // Load approved requests from localStorage when userData becomes available
   useEffect(() => {
@@ -409,6 +420,28 @@ const Dashboard = () => {
   };
 
   // Signature management functions
+  /**
+   * Load the shares this advisor holds.
+   *
+   * Shares are handed to every advisor and were previously shown to nobody, so
+   * the mechanism the whole scheme rests on was invisible to the people holding
+   * the pieces.
+   */
+  const loadShareHoldings = async () => {
+    setIsLoadingShares(true);
+    try {
+      const response = await nilaiApi.getShareHoldings();
+      if (response.status === 'success' && response.data) {
+        setShareHoldings(response.data);
+      }
+    } catch (error) {
+      console.error('Error loading share holdings:', error);
+      toast.error('Failed to load your share holdings');
+    } finally {
+      setIsLoadingShares(false);
+    }
+  };
+
   const loadSignatures = async () => {
     setIsLoadingSignatures(true);
     try {
@@ -3624,6 +3657,94 @@ const Dashboard = () => {
                 </p>
               </div>
             </div>
+          </div>
+
+          {/* Your share holdings.
+
+              Shares are distributed to every advisor and were previously shown
+              to nobody, so the mechanism the scheme rests on was invisible to
+              the people holding the pieces. Share values are never sent to the
+              browser — only the fact that a share exists. */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-lg font-semibold text-gray-900">Your Key Shares</h4>
+              {isLoadingShares && (
+                <span className="text-sm text-gray-500">Loading…</span>
+              )}
+            </div>
+
+            {shareHoldings ? (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-2xl font-bold text-gray-900">
+                      {shareHoldings.total_shares_held}
+                    </div>
+                    <div className="text-xs text-gray-600">Shares held</div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-2xl font-bold text-gray-900">
+                      {shareHoldings.students?.length ?? 0}
+                    </div>
+                    <div className="text-xs text-gray-600">Students you can help unlock</div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <div className="text-2xl font-bold text-gray-900">
+                      {shareHoldings.threshold} of {shareHoldings.total_advisors}
+                    </div>
+                    <div className="text-xs text-gray-600">Shares needed to reconstruct a key</div>
+                  </div>
+                </div>
+
+                <p className="text-xs text-gray-500 mb-3">
+                  Your share alone reveals nothing. {shareHoldings.threshold} advisors
+                  must combine their shares to reconstruct a record&apos;s key, and one
+                  of them has to be the student&apos;s own advisor.
+                </p>
+
+                {(shareHoldings.students?.length ?? 0) === 0 ? (
+                  <p className="text-sm text-gray-600">
+                    You hold no shares yet. Shares are issued to every advisor when
+                    a grade is recorded.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-600 border-b border-gray-200">
+                          <th className="py-2 pr-4 font-medium">Student</th>
+                          <th className="py-2 pr-4 font-medium">NIM</th>
+                          <th className="py-2 pr-4 font-medium">Shares</th>
+                          <th className="py-2 font-medium">Your role</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shareHoldings.students.map((entry) => (
+                          <tr key={entry.nim} className="border-b border-gray-100">
+                            <td className="py-2 pr-4 text-gray-900">{entry.nama ?? '—'}</td>
+                            <td className="py-2 pr-4 font-mono text-xs text-gray-700">{entry.nim}</td>
+                            <td className="py-2 pr-4 text-gray-700">{entry.shares_held}</td>
+                            <td className="py-2">
+                              {entry.is_their_advisor ? (
+                                <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-xs font-medium">
+                                  Their advisor — your approval is required
+                                </span>
+                              ) : (
+                                <span className="text-xs text-gray-500">Colleague</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            ) : (
+              !isLoadingShares && (
+                <p className="text-sm text-gray-600">Your share holdings are unavailable.</p>
+              )
+            )}
           </div>
 
           {/* Statistics Cards */}

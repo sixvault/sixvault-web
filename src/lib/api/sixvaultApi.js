@@ -152,6 +152,14 @@ export const nilaiApi = {
     });
   },
 
+  // What shares the calling advisor holds, grouped by student. Never returns a
+  // share value — only the fact that shares exist.
+  getShareHoldings: async () => {
+    return createFetchRequest('/nilai/share/list', {
+      method: 'GET',
+    });
+  },
+
   // Decrypt grades data
   decryptGrades: async (daftarNilaiId) => {
     return createFetchRequest('/nilai/decrypt', {
