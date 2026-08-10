@@ -50,24 +50,37 @@ class AES {
     static RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
     // Helper functions
+
+    /**
+     * Plaintext to bytes, as UTF-8.
+     *
+     * charCodeAt was used here, which truncates every code point to its low
+     * byte: any character above U+00FF was silently corrupted, so a student
+     * name or course title outside Latin-1 did not survive a round trip.
+     */
     static stringToBytes(str) {
-        const bytes = new Uint8Array(str.length);
-        for (let i = 0; i < str.length; i++) {
-            bytes[i] = str.charCodeAt(i);
-        }
-        return bytes;
+        return new TextEncoder().encode(str);
     }
 
     static bytesToString(bytes) {
-        return String.fromCharCode.apply(null, bytes);
+        return new TextDecoder().decode(new Uint8Array(bytes));
     }
 
-    static stringToBase64(str) {
-        return btoa(str);
+    static bytesToBase64(bytes) {
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
     }
 
-    static base64ToString(base64) {
-        return atob(base64);
+    static base64ToBytes(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
     }
 
     static padBytes(bytes) {
@@ -78,15 +91,75 @@ class AES {
         return paddedBytes;
     }
 
+    /**
+     * Strip PKCS#7 padding, rejecting anything that is not valid padding.
+     *
+     * The length byte was previously trusted outright, so decryption under the
+     * wrong key returned a silently truncated string — or, when the final byte
+     * exceeded the buffer length, an empty one — instead of failing. Callers
+     * had no way to distinguish that from a successful decryption of empty
+     * data.
+     */
     static unpadBytes(bytes) {
         const padLength = bytes[bytes.length - 1];
+
+        if (padLength < 1 || padLength > 16 || padLength > bytes.length) {
+            throw new Error('Invalid AES padding: wrong key or corrupt data');
+        }
+
+        for (let i = bytes.length - padLength; i < bytes.length; i++) {
+            if (bytes[i] !== padLength) {
+                throw new Error('Invalid AES padding: wrong key or corrupt data');
+            }
+        }
+
         return bytes.slice(0, bytes.length - padLength);
+    }
+
+    /**
+     * Key material as the exact number of bytes the cipher needs.
+     *
+     * A 32-character hex string is decoded to 16 bytes. keyExpansion used to
+     * take one byte per *character* and read only the first 16 of them, so such
+     * a key contributed 16 ASCII hex digits — 64 bits of entropy for a cipher
+     * advertised as 128-bit. Raw bytes and non-hex strings of the right length
+     * are also accepted; anything else is rejected rather than truncated.
+     *
+     * Must match sixvault-api/app/utils/crypto/AES.js exactly: the two encrypt
+     * and decrypt each other's data.
+     */
+    keyBytes(key) {
+        const required = this.Nk * 4;
+
+        let bytes;
+        if (key instanceof Uint8Array) {
+            bytes = key;
+        } else if (typeof key === 'string') {
+            if (key.length === required * 2 && /^[0-9a-fA-F]+$/.test(key)) {
+                bytes = new Uint8Array(required);
+                for (let i = 0; i < required; i++) {
+                    bytes[i] = parseInt(key.substr(i * 2, 2), 16);
+                }
+            } else {
+                bytes = AES.stringToBytes(key);
+            }
+        } else {
+            throw new TypeError('AES key must be a hex string, a string, or raw bytes');
+        }
+
+        if (bytes.length !== required) {
+            throw new Error(
+                `AES-${this.keySize} requires a ${required}-byte key; received ${bytes.length} bytes`
+            );
+        }
+
+        return bytes;
     }
 
     // Key expansion
     keyExpansion(key) {
         const keyWords = new Array(this.Nb * (this.Nr + 1));
-        const keyBytes = AES.stringToBytes(key);
+        const keyBytes = this.keyBytes(key);
 
         // Copy initial key
         for (let i = 0; i < this.Nk; i++) {
@@ -248,13 +321,20 @@ class AES {
             }
         }
 
-        return AES.stringToBase64(AES.bytesToString(ciphertext));
+        return AES.bytesToBase64(ciphertext);
     }
 
     decrypt(ciphertext, key) {
         const keySchedule = this.keyExpansion(key);
-        const bytes = AES.stringToBytes(AES.base64ToString(ciphertext));
-        const blocks = Math.ceil(bytes.length / 16);
+        const bytes = AES.base64ToBytes(ciphertext);
+
+        if (bytes.length === 0 || bytes.length % 16 !== 0) {
+            throw new Error(
+                'Invalid AES ciphertext: length is not a multiple of the block size'
+            );
+        }
+
+        const blocks = bytes.length / 16;
         const plaintext = new Uint8Array(bytes.length);
 
         for (let block = 0; block < blocks; block++) {

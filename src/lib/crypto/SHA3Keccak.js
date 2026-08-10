@@ -97,7 +97,6 @@ function keccak(input, outputLength = 256) {
 
   const hash = [];
   let outBytes = outputLength / 8;
-  let offset = 0;
   while (outBytes > 0) {
     for (let i = 0; i < rate / 8 && outBytes > 0; i++) {
       let lane = state[i];
